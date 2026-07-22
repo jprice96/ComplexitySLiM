@@ -1,0 +1,100 @@
+// define functions
+	// I have just copied this from your script, I am under the impression this just creates a parameter that can be globally called anywhere in the simulation
+function (void) setGlobalParameter(s$ name, ifls value){
+	if(!exists(name)){
+		defineConstant(name, value);
+	}
+}
+
+
+
+// set up a simple neutral simulation
+initialize() {
+	
+	setGlobalParameter("nloci", 5);
+	tmpval = (2*(nloci * nloci))-1; // In-degree n*n and out-degree n*n; -1 to account for indexing starting at 0
+	setGlobalParameter("matrixsize", tmpval);
+
+	initializeChromosome(1, type="H"); // Defines as haploid  --note if errors start coming up, may need to define total chr length (pg. 188)
+	initializeMutationRate(c(1e-3, 1e-3), c(matrixsize, (matrixsize*2)+1)); // 2 mutations rates, one for interaction terms one for sign terms
+	
+	// Mutation types
+	initializeMutationType("m1", 0.5, "n", 0, 1);	// M1 = magnitude change mutation; Will create an effect size to add to current value
+	m1.convertToSubstitution = F;
+	m1.color = "blue";
+	
+	initializeMutationType("m2", 0.5, "f", -1);	// M2 = sign change mutation; Will just invert current value
+	m2.convertToSubstitution = F;
+	m2.color = "red";
+	
+	initializeMutationType("m101", 0.5, "s", "return runif(1,1,9);");			// initial genotype generation, magnitude
+	m101.convertToSubstitution = F;
+	m101.color = "green";
+	initializeMutationType("m102", 0.5, "s", "return sample(c(1,-1), 1);");	// initial genotype generation, sign
+	m102.convertToSubstitution = F;
+	m102.color = "yellow";
+	
+
+	// Create genome
+	initializeGenomicElementType("g1", m1, 1);	// Interaction values	
+	initializeGenomicElementType("g2", m2, 1);	// Sign values
+	
+
+	initializeGenomicElement(g1, 0, matrixsize);
+	initializeGenomicElement(g2, matrixsize+1, (matrixsize*2)+1);
+	
+	// Recombination rates
+	initializeRecombinationRate(1e-2); // Should I introduce a recombination map to force all values of one loci to be 100% linked?
+}
+
+// Tell SLiM to ignore the values held as "selection coefficients" as they are used for something else
+mutationEffect(m1, p1) {return 1.0;}
+mutationEffect(m2, p1) {return 1.0;}
+mutationEffect(m101, p1) {return 1.0;}
+mutationEffect(m102, p1) {return 1.0;}
+
+
+1 early() {
+	sim.addSubpop("p1", 100);
+	
+	// Generate initial random genotype by drawing a mutation at each position and giving it to every individual in the population
+				// This generates a "warning" at the end of the output, this is fine it just doesn't expect this kind of thing to be done in early
+				// I am not sure if there is an easy way to provide SLiM with a predefined "chromosome", I would like to generate/inspect the initial genotype elsewhere before running the simulation
+	inds = sim.subpopulations.haplosomes;
+	inds.addNewDrawnMutation(m101, 0:matrixsize);
+	inds.addNewDrawnMutation(m102, (matrixsize+1):((matrixsize*2)+1));
+	
+}
+
+
+// Determine fitness of present genotypes
+1: late() {
+	
+	inds = sim.subpopulations.individuals;
+
+	for(i in 1:length(inds)){
+		geno = inds[i-1].mutationsFromHaplosomes("all"); // creates a vector of each position in the individual and their "selection coefficient"
+		
+		// This is presumably where I would want to group identical genotypes together and supply them with precalculated values, or if they are novel then move on to the calcs below
+		
+		// Converts vector to matrix by reading vector in as columns going left to right
+			// This means the second half of the values will be on the right side of the n * 2n matrix (there is an in-deg and out-deg matrix)
+		gmag = matrix(geno[0:matrixsize], nrow=nloci, ncol=nloci*2);
+		gsig = matrix(geno[(matrixsize+1):((matrixsize*2)+1)], nrow=nloci, ncol=nloci*2);
+		
+		// Input values into ODE calcs
+			// So gmag contains all the interaction values that need to be evaluated by K = e^(-delta^2) to produce the K terms for the Hill functionss; gsig contains all the sign values that need to be evaluated (either as ==? or is the product 1 or -1) to determine whether enhancing or repressing (incorporated as that p term in the equation in document)
+		
+		// fitval[i] = x
+	}
+	
+	//inds.fitnessScaling = fitval
+}
+
+
+10 late() {
+
+	sim.simulationFinished();
+	}
+	
+	
