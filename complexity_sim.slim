@@ -1,5 +1,5 @@
 // define functions
-	// I have just copied this from your script, I am under the impression this just creates a parameter that can be globally called anywhere in the simulation
+// I have just copied this from your script, I am under the impression this just creates a parameter that can be globally called anywhere in the simulation
 function (void) setGlobalParameter(s$ name, ifls value){
 	if(!exists(name)){
 		defineConstant(name, value);
@@ -12,11 +12,15 @@ function (void) setGlobalParameter(s$ name, ifls value){
 initialize() {
 	
 	setGlobalParameter("nloci", 5);
-	tmpval = (2*(nloci * nloci))-1; // In-degree n*n and out-degree n*n; -1 to account for indexing starting at 0
-	setGlobalParameter("matrixsize", tmpval);
-
+	tmpval = nloci * (nloci*4); // nloci rows, four paras for each other loci (4n) columns
+	setGlobalParameter("genomesize", tmpval-1); //-1 for indexing
+	tmpval = asInteger(tmpval/2);
+	setGlobalParameter("P_start", tmpval);
+	setGlobalParameter("K_end", (tmpval-1));
+	
+	
 	initializeChromosome(1, type="H"); // Defines as haploid  --note if errors start coming up, may need to define total chr length (pg. 188)
-	initializeMutationRate(c(1e-3, 1e-3), c(matrixsize, (matrixsize*2)+1)); // 2 mutations rates, one for interaction terms one for sign terms
+	initializeMutationRate(c(1e-1, 1e-1), c(K_end, genomesize)); // 2 mutations rates, one for interaction terms one for sign terms
 	
 	// Mutation types
 	initializeMutationType("m1", 0.5, "n", 0, 1);	// M1 = magnitude change mutation; Will create an effect size to add to current value
@@ -34,14 +38,14 @@ initialize() {
 	m102.convertToSubstitution = F;
 	m102.color = "yellow";
 	
-
+	
 	// Create genome
 	initializeGenomicElementType("g1", m1, 1);	// Interaction values	
 	initializeGenomicElementType("g2", m2, 1);	// Sign values
 	
-
-	initializeGenomicElement(g1, 0, matrixsize);
-	initializeGenomicElement(g2, matrixsize+1, (matrixsize*2)+1);
+	
+	initializeGenomicElement(g1, 0, K_end);
+	initializeGenomicElement(g2, P_start, genomesize);
 	
 	// Recombination rates
 	initializeRecombinationRate(1e-2); // Should I introduce a recombination map to force all values of one loci to be 100% linked?
@@ -55,15 +59,15 @@ mutationEffect(m102, p1) {return 1.0;}
 
 
 1 early() {
-	sim.addSubpop("p1", 100);
+	sim.addSubpop("p1", 10);
 	
 	// Generate initial random genotype by drawing a mutation at each position and giving it to every individual in the population
-				// This generates a "warning" at the end of the output, this is fine it just doesn't expect this kind of thing to be done in early
-				// I am not sure if there is an easy way to provide SLiM with a predefined "chromosome", I would like to generate/inspect the initial genotype elsewhere before running the simulation
+	// This generates a "warning" at the end of the output, this is fine it just doesn't expect this kind of thing to be done in early
+	// I am not sure if there is an easy way to provide SLiM with a predefined "chromosome", I would like to generate/inspect the initial genotype elsewhere before running the simulation
 	inds = sim.subpopulations.haplosomes;
-	inds.addNewDrawnMutation(m101, 0:matrixsize);
-	inds.addNewDrawnMutation(m102, (matrixsize+1):((matrixsize*2)+1));
-	
+	inds.addNewDrawnMutation(m101, 0:K_end);
+	inds.addNewDrawnMutation(m102, P_start:genomesize);
+
 }
 
 
@@ -71,30 +75,75 @@ mutationEffect(m102, p1) {return 1.0;}
 1: late() {
 	
 	inds = sim.subpopulations.individuals;
-
-	for(i in 1:length(inds)){
-		geno = inds[i-1].mutationsFromHaplosomes("all"); // creates a vector of each position in the individual and their "selection coefficient"
+	n_inds = length(inds);
+	
+	// Need to supply an a*b matrix where a is # of ind, b is number of parameters (5 -> h,p,K,alpha,beta)
+	h = rep(4, count=n_inds); // Hill coefficient, for now kept as constant across all
+	
+	for(i in 0:(n_inds-1)){
+		// Need to make sure that values are ordered correctly
+		// Geno_strings should be out-degree matrix, then in-degree matrix, byrow=F
 		
-		// This is presumably where I would want to group identical genotypes together and supply them with precalculated values, or if they are novel then move on to the calcs below
+		geno_K = inds[i].mutationsFromHaplosomes("all")[0:K_end];
+		geno_P = inds[i].mutationsFromHaplosomes("all")[P_start:genomesize];
 		
-		// Converts vector to matrix by reading vector in as columns going left to right
-			// This means the second half of the values will be on the right side of the n * 2n matrix (there is an in-deg and out-deg matrix)
-		gmag = matrix(geno[0:matrixsize], nrow=nloci, ncol=nloci*2);
-		gsig = matrix(geno[(matrixsize+1):((matrixsize*2)+1)], nrow=nloci, ncol=nloci*2);
+		size_term = asInteger((K_end/2)-0.5);
 		
-		// Input values into ODE calcs
-			// So gmag contains all the interaction values that need to be evaluated by K = e^(-delta^2) to produce the K terms for the Hill functionss; gsig contains all the sign values that need to be evaluated (either as ==? or is the product 1 or -1) to determine whether enhancing or repressing (incorporated as that p term in the equation in document)
+		geno_K_out = matrix(geno_K[0:size_term], nrow=nloci, ncol=nloci, byrow=F);
+		geno_K_in = matrix(geno_K[(size_term+1):K_end], nrow=nloci, ncol=nloci, byrow=F);
 		
-		// fitval[i] = x
+		// geno_P should be the same sizes, so using K_end should work
+		geno_P_out = matrix(geno_P[0:size_term], nrow=nloci, ncol=nloci, byrow=F);
+		geno_P_in = matrix(geno_P[(size_term+1):K_end], nrow=nloci, ncol=nloci, byrow=F);
+		
+		// Calculating values by comparing in-value with corresponding out-value, which should share same coords
+		
+		K_vals[i,] = asVector(E^(((geno_K_out - geno_K_in)*-1)^2));
+		
+		P_vals[i,] = asVector(geno_P_out * geno_P_in);
+	
 	}
 	
-	//inds.fitnessScaling = fitval
+	
+	
+	// For each locus (currently locked as 5 loci) in an individual
+	// So p = {i1, i2, i3, ..., i25} for each individual
+	
+	//	
+	//	K_val = 
+	//		
+	//	p = ; // 1 or -1, indicating if enhancing or repressing interaction -> sign value
+	//		
+	//	K = ; // Node effect -> interaction value
+	//		
+	//	beta = rep(1, count=5*n_inds); // Maximal expression effect, for now kept as constant across all
+	//		
+	//	alpha = rep(1, count=5*n_inds); // Decay term, for now kept as constant across all
+	//		
+	//	// Place all values into needed a*b matrix format
+	//	input = matrix(c(h, beta, alpha, K, p), nrow = n_inds, byrow = F);		
+	//	// Run ODEIntegrate
+	//	out = sim.ODEIntegrate(input);
+	//		
+	//
+	//		
+	//		// From Nick on Teams
+	//			// How to go about inputing values for ODE calc
+	//		
+	//		n_inds = 5000;
+	//		h = rep(4, count = n_inds);
+	//		p = sample(c(-1, 1), 25 * n_inds, replace = T);
+	//		K = abs(rnorm(25 * n_inds));
+	//		beta = abs(rnorm(5 * n_inds));
+	//		alpha = abs(rnorm(5 * n_inds));
+	//		input = matrix(c(h, beta, alpha, K, p), nrow = n_inds, byrow = F);
+	//		startTime = clock(); out = sim.ODEIntegrate(input); endTime = clock(); endTime - startTime;
+	//		
+	
 }
 
 
 10 late() {
-
+	
 	sim.simulationFinished();
-	}
-	
-	
+}
