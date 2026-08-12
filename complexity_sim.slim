@@ -23,7 +23,8 @@ initialize() {
 	initializeMutationRate(c(1e-1, 1e-1), c(K_end, genomesize)); // 2 mutations rates, one for interaction terms one for sign terms
 	
 	// Mutation types
-	initializeMutationType("m1", 0.5, "n", 0, 1);	// M1 = magnitude change mutation; Will create an effect size to add to current value
+		//NOTE: Changed magnitude range from 1-9 to 1.0-1.9 in order to prevent issues from massive values in later calcs
+	initializeMutationType("m1", 0.5, "n", 0, 0.1);	// M1 = magnitude change mutation; Will create an effect size to add to current value
 	m1.convertToSubstitution = F;
 	m1.color = "blue";
 	
@@ -31,7 +32,7 @@ initialize() {
 	m2.convertToSubstitution = F;
 	m2.color = "red";
 	
-	initializeMutationType("m101", 0.5, "s", "return runif(1,1,9);");			// initial genotype generation, magnitude
+	initializeMutationType("m101", 0.5, "s", "return runif(1,1,9)/10;");			// initial genotype generation, magnitude
 	m101.convertToSubstitution = F;
 	m101.color = "green";
 	initializeMutationType("m102", 0.5, "s", "return sample(c(1,-1), 1);");	// initial genotype generation, sign
@@ -78,14 +79,19 @@ mutationEffect(m102, p1) {return 1.0;}
 	n_inds = length(inds);
 	
 	// Need to supply an a*b matrix where a is # of ind, b is number of parameters (5 -> h,p,K,alpha,beta)
-	h = rep(4, count=n_inds); // Hill coefficient, for now kept as constant across all
+	h_vals = rep(4, count=n_inds); // Hill coefficient, for now kept as constant across all
+	
+	// Create empty dataframes for input
+	tmpval = n_inds*(nloci*nloci);
+	K_vals = matrix(rep(0.0, tmpval), nrow=n_inds, ncol=(nloci*nloci));
+	P_vals = K_vals;
 	
 	for(i in 0:(n_inds-1)){
 		// Need to make sure that values are ordered correctly
 		// Geno_strings should be out-degree matrix, then in-degree matrix, byrow=F
 		
-		geno_K = inds[i].mutationsFromHaplosomes("all")[0:K_end];
-		geno_P = inds[i].mutationsFromHaplosomes("all")[P_start:genomesize];
+		geno_K = inds[i].mutationsFromHaplosomes("all")[0:K_end].selectionCoeff;
+		geno_P = inds[i].mutationsFromHaplosomes("all")[P_start:genomesize].selectionCoeff;
 		
 		size_term = asInteger((K_end/2)-0.5);
 		
@@ -98,48 +104,19 @@ mutationEffect(m102, p1) {return 1.0;}
 		
 		// Calculating values by comparing in-value with corresponding out-value, which should share same coords
 		
-		K_vals[i,] = asVector(E^(((geno_K_out - geno_K_in)*-1)^2));
+		K_vals[i,] = asVector(exp(((geno_K_out - geno_K_in)*-1)^2));
 		
 		P_vals[i,] = asVector(geno_P_out * geno_P_in);
 	
 	}
 	
+	alpha = rep(1, count = 5*n_inds);	// Decay term, keep as constant for now
+	beta = rep(1, count = 5*n_inds);		// Maximal expression effect, keep as constant for now
 	
+	input = matrix(c(h_vals, beta, alpha, K_vals, P_vals), nrow=n_inds, byrow=F);
 	
-	// For each locus (currently locked as 5 loci) in an individual
-	// So p = {i1, i2, i3, ..., i25} for each individual
-	
-	//	
-	//	K_val = 
-	//		
-	//	p = ; // 1 or -1, indicating if enhancing or repressing interaction -> sign value
-	//		
-	//	K = ; // Node effect -> interaction value
-	//		
-	//	beta = rep(1, count=5*n_inds); // Maximal expression effect, for now kept as constant across all
-	//		
-	//	alpha = rep(1, count=5*n_inds); // Decay term, for now kept as constant across all
-	//		
-	//	// Place all values into needed a*b matrix format
-	//	input = matrix(c(h, beta, alpha, K, p), nrow = n_inds, byrow = F);		
-	//	// Run ODEIntegrate
-	//	out = sim.ODEIntegrate(input);
-	//		
-	//
-	//		
-	//		// From Nick on Teams
-	//			// How to go about inputing values for ODE calc
-	//		
-	//		n_inds = 5000;
-	//		h = rep(4, count = n_inds);
-	//		p = sample(c(-1, 1), 25 * n_inds, replace = T);
-	//		K = abs(rnorm(25 * n_inds));
-	//		beta = abs(rnorm(5 * n_inds));
-	//		alpha = abs(rnorm(5 * n_inds));
-	//		input = matrix(c(h, beta, alpha, K, p), nrow = n_inds, byrow = F);
-	//		startTime = clock(); out = sim.ODEIntegrate(input); endTime = clock(); endTime - startTime;
-	//		
-	
+	out = sim.ODEIntegrate(input);
+
 }
 
 
