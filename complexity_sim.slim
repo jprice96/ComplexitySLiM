@@ -1,5 +1,4 @@
 // define functions
-// I have just copied this from your script, I am under the impression this just creates a parameter that can be globally called anywhere in the simulation
 function (void) setGlobalParameter(s$ name, ifls value){
 	if(!exists(name)){
 		defineConstant(name, value);
@@ -7,9 +6,11 @@ function (void) setGlobalParameter(s$ name, ifls value){
 }
 
 
-
 // set up a simple neutral simulation
 initialize() {
+	tmpval = clock();
+	setGlobalParameter("startTime", tmpval);
+	
 	
 	setGlobalParameter("nloci", 5);
 	tmpval = nloci * (nloci*4); // nloci rows, four paras for each other loci (4n) columns
@@ -20,7 +21,7 @@ initialize() {
 	
 	
 	initializeChromosome(1, type="H"); // Defines as haploid  --note if errors start coming up, may need to define total chr length (pg. 188)
-	initializeMutationRate(c(1e-1, 1e-1), c(K_end, genomesize)); // 2 mutations rates, one for interaction terms one for sign terms
+	initializeMutationRate(c(1e-2, 1e-3), c(K_end, genomesize)); // 2 mutations rates, one for interaction terms one for sign terms
 	
 	// Mutation types
 		//NOTE: Changed magnitude range from 1-9 to 1.0-1.9 in order to prevent issues from massive values in later calcs
@@ -50,6 +51,13 @@ initialize() {
 	
 	// Recombination rates
 	initializeRecombinationRate(1e-2); // Should I introduce a recombination map to force all values of one loci to be 100% linked?
+	
+	
+	// Define the optimum phenotypic spread of loci expression that is being selected for
+	tmpval = c(NAN, 2.0, NAN, 0.5, NAN);
+	setGlobalParameter("pheno_opt", tmpval);
+	
+	
 }
 
 // Tell SLiM to ignore the values held as "selection coefficients" as they are used for something else
@@ -60,7 +68,7 @@ mutationEffect(m102, p1) {return 1.0;}
 
 
 1 early() {
-	sim.addSubpop("p1", 10);
+	sim.addSubpop("p1", 1000);
 	
 	// Generate initial random genotype by drawing a mutation at each position and giving it to every individual in the population
 	// This generates a "warning" at the end of the output, this is fine it just doesn't expect this kind of thing to be done in early
@@ -86,12 +94,22 @@ mutationEffect(m102, p1) {return 1.0;}
 	K_vals = matrix(rep(0.0, tmpval), nrow=n_inds, ncol=(nloci*nloci));
 	P_vals = K_vals;
 	
+	// only take m2/m102
+	// can .position and then use as index
+	// BEFORE calculating K_vals
+		// sum(inds[1].haplosomes.mutations[inds[1].haplosomes.mutations.position==5].selectionCoeff)
+		
+		// Alternative to mutation stacking? Look into mutation() Callbacks
+	
 	for(i in 0:(n_inds-1)){
 		// Need to make sure that values are ordered correctly
 		// Geno_strings should be out-degree matrix, then in-degree matrix, byrow=F
-		
-		geno_K = inds[i].mutationsFromHaplosomes("all")[0:K_end].selectionCoeff;
-		geno_P = inds[i].mutationsFromHaplosomes("all")[P_start:genomesize].selectionCoeff;
+		geno_K = rep(0.0, K_end+1);
+		geno_P = geno_K;
+		for(j in 0:K_end){
+			geno_K[j] = sum(inds[i].haplosomes.mutations[inds[i].haplosomes.mutations.position==j].selectionCoeff);
+			geno_P[j] = product(inds[i].haplosomes.mutations[inds[i].haplosomes.mutations.position==(P_start+j)].selectionCoeff);
+		}
 		
 		size_term = asInteger((K_end/2)-0.5);
 		
@@ -115,12 +133,31 @@ mutationEffect(m102, p1) {return 1.0;}
 	
 	input = matrix(c(h_vals, beta, alpha, K_vals, P_vals), nrow=n_inds, byrow=F);
 	
+	// Output is a matrix of loci expression values (columns) for each individual (row)
 	out = sim.ODEIntegrate(input);
-
+	
+	pheno_fit = rep(0.0, n_inds);
+	for(i in 0:(n_inds-1)){
+		// Compare each individual output to the 'optimal' output
+		pheno_vals = asVector(abs((out[i,]-pheno_opt)));
+		pheno_vals = pheno_vals[isNAN(pheno_vals)==F];
+		pheno_vals = exp(pheno_vals/-100);	// Div by 10 just to try and down scale a bit? Div by -ve same as mult by -ve
+		pheno_fit[i] = mean(pheno_vals);
+		
+		if(pheno_fit[i]<0){
+			print("individual ", i, " with pheno_vals: ", pheno_vals);
+			}
+	}
+	
+	inds.fitnessScaling = pheno_fit;
+	
 }
 
 
-10 late() {
+1000 late() {
+	
+	endTime = clock();
+	print(endTime-startTime);
 	
 	sim.simulationFinished();
 }
