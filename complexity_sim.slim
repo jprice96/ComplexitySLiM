@@ -5,6 +5,22 @@ function (void) setGlobalParameter(s$ name, ifls value){
 	}
 }
 
+function (fi) calcFitnessGaussian(fi traits, fi optTraits, fi optSigma, i$ nTraits) {
+	// Calculate fitness from phenotype. Make sure this is only called after CalcPhenotype()!
+	
+	// Calculate fitness width based on the given distance
+	sigma = diag(optSigma * optSigma); //calcFitnessWidth(optTraits, fitnessCostDistance, fitnessCost);
+
+	// Normalise fitness
+	fitnessNorm = dmvnorm(c(optTraits), c(optTraits), sigma);
+
+	fitnesses = dmvnorm(traits, c(optTraits), sigma) / fitnessNorm;
+
+	// Ensure we don't set fitnesses to 0 exactly, causes problems
+	fitnesses[fitnesses <= 0.0] = 1e-6;	
+
+	return fitnesses;
+}
 
 // set up a simple neutral simulation
 initialize() {
@@ -57,6 +73,8 @@ initialize() {
 	tmpval = c(NAN, 2.0, NAN, 0.5, NAN);
 	setGlobalParameter("pheno_opt", tmpval);
 	
+	setGlobalParameter("opt_sigma", c(0.01, 0.01));
+	
 	
 }
 
@@ -82,7 +100,6 @@ mutationEffect(m102, p1) {return 1.0;}
 
 // Determine fitness of present genotypes
 1: late() {
-	
 	inds = sim.subpopulations.individuals;
 	n_inds = length(inds);
 	
@@ -136,20 +153,23 @@ mutationEffect(m102, p1) {return 1.0;}
 	// Output is a matrix of loci expression values (columns) for each individual (row)
 	out = sim.ODEIntegrate(input);
 	
-	pheno_fit = rep(0.0, n_inds);
-	for(i in 0:(n_inds-1)){
-		// Compare each individual output to the 'optimal' output
-		pheno_vals = asVector(abs((out[i,]-pheno_opt)));
-		pheno_vals = pheno_vals[isNAN(pheno_vals)==F];
-		pheno_vals = exp(pheno_vals/-100);	// Div by 10 just to try and down scale a bit? Div by -ve same as mult by -ve
-		pheno_fit[i] = mean(pheno_vals);
-		
-		if(pheno_fit[i]<0){
-			print("individual ", i, " with pheno_vals: ", pheno_vals);
-			}
-	}
+//	pheno_fit = rep(0.0, n_inds);
+//	for(i in 0:(n_inds-1)){
+//		// Compare each individual output to the 'optimal' output
+//		pheno_vals = asVector(abs((out[i,]-pheno_opt)));
+//		pheno_vals = pheno_vals[isNAN(pheno_vals)==F];
+//		pheno_vals = exp(pheno_vals/-100);	// Div by 10 just to try and down scale a bit? Div by -ve same as mult by -ve
+//		pheno_fit[i] = mean(pheno_vals);
+//		
+//		if(pheno_fit[i]<0){
+//			print("individual ", i, " with pheno_vals: ", pheno_vals);
+//			}
+//	}
 	
-	inds.fitnessScaling = pheno_fit;
+	traits = out[,which(!isNAN(pheno_opt))];
+	sel_traits = pheno_opt[!isNAN(pheno_opt)];
+	fitnesses = calcFitnessGaussian(traits, sel_traits, opt_sigma, length(sel_traits));
+	inds.fitnessScaling = fitnesses;
 	
 }
 
