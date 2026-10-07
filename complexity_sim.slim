@@ -4,6 +4,23 @@ function (void) setGlobalParameter(s$ name, ifls value){
 		defineConstant(name, value);
 	}
 }
+	// Gaussian fitness function from Nick
+function (fi) calcFitnessGaussian(fi traits, fi optTraits, fi optSigma, i$ nTraits) {
+	// Calculate fitness from phenotype. Make sure this is only called after CalcPhenotype()!
+	
+	// Calculate fitness width based on the given distance
+	sigma = diag(optSigma * optSigma); //calcFitnessWidth(optTraits, fitnessCostDistance, fitnessCost);
+
+	// Normalise fitness
+	fitnessNorm = dmvnorm(c(optTraits), c(optTraits), sigma);
+
+	fitnesses = dmvnorm(traits, c(optTraits), sigma) / fitnessNorm;
+
+	// Ensure we don't set fitnesses to 0 exactly, causes problems
+	fitnesses[fitnesses <= 0.0] = 1e-6;	
+
+	return fitnesses;
+}
 
 
 // set up a simple neutral simulation
@@ -27,36 +44,40 @@ initialize() {
 		//NOTE: Changed magnitude range from 1-9 to 1.0-1.9 in order to prevent issues from massive values in later calcs
 	initializeMutationType("m1", 0.5, "n", 0, 0.1);	// M1 = magnitude change mutation; Will create an effect size to add to current value
 	m1.convertToSubstitution = F;
-	m1.color = "blue";
+	m1.mutationStackPolicy = "l";
 	
 	initializeMutationType("m2", 0.5, "f", -1);	// M2 = sign change mutation; Will just invert current value
 	m2.convertToSubstitution = F;
-	m2.color = "red";
+	m2.mutationStackPolicy = "l";
 	
-	initializeMutationType("m101", 0.5, "s", "return runif(1,1,9)/10;");			// initial genotype generation, magnitude
+	// Storage for final mutation result
+	initializeMutationType("m101", 0.5, "f", 0);
 	m101.convertToSubstitution = F;
-	m101.color = "green";
-	initializeMutationType("m102", 0.5, "s", "return sample(c(1,-1), 1);");	// initial genotype generation, sign
-	m102.convertToSubstitution = F;
-	m102.color = "yellow";
+	m101.mutationStackPolicy = "l";
+	m101.color = "blue";
 	
+	initializeMutationType("m102", 0.5, "f", 0);
+	m102.convertToSubstitution = F;
+	m102.mutationStackPolicy = "l";
+	m102.color = "red";
 	
 	// Create genome
-	initializeGenomicElementType("g1", m1, 1);	// Interaction values	
-	initializeGenomicElementType("g2", m2, 1);	// Sign values
+	initializeGenomicElementType("g1", c(m1, m101), c(1,0));	// Interaction values	
+	initializeGenomicElementType("g2", c(m2, m102), c(1,0));	// Sign values
 	
 	
 	initializeGenomicElement(g1, 0, K_end);
 	initializeGenomicElement(g2, P_start, genomesize);
 	
 	// Recombination rates
-	initializeRecombinationRate(1e-2); // Should I introduce a recombination map to force all values of one loci to be 100% linked?
+	initializeRecombinationRate(1e-3); // Should I introduce a recombination map to force all values of one loci to be 100% linked?
 	
 	
 	// Define the optimum phenotypic spread of loci expression that is being selected for
-	tmpval = c(NAN, 2.0, NAN, 0.5, NAN);
+	tmpval = c(NAN, NAN, 14.5, 0.0, NAN);
 	setGlobalParameter("pheno_opt", tmpval);
-	
+		// For fitness function
+	setGlobalParameter("opt_sigma", c(0.01, 0.01));
 	
 }
 
@@ -66,16 +87,23 @@ mutationEffect(m2, p1) {return 1.0;}
 mutationEffect(m101, p1) {return 1.0;}
 mutationEffect(m102, p1) {return 1.0;}
 
-
 1 early() {
 	sim.addSubpop("p1", 1000);
 	
 	// Generate initial random genotype by drawing a mutation at each position and giving it to every individual in the population
 	// This generates a "warning" at the end of the output, this is fine it just doesn't expect this kind of thing to be done in early
-	// I am not sure if there is an easy way to provide SLiM with a predefined "chromosome", I would like to generate/inspect the initial genotype elsewhere before running the simulation
 	inds = sim.subpopulations.haplosomes;
-	inds.addNewDrawnMutation(m101, 0:K_end);
-	inds.addNewDrawnMutation(m102, P_start:genomesize);
+	
+	
+	// These values come from an R script that creates a 'realistic random network' based of Klemm & Eguiluz 2002
+	startGenomeK = c(9,2,8,5,2,2,9,1,3,2,1,9,7,5,8,5,9,6,1,4,9,2,9,1,7,3,1,9,1,8,3,5,2,2,5,5,6,3,3,8,2,6,9,3,3,3,5,5,7,8);
+		// Changed to 1.0 to 1.9, will just do this to adjust for now but in future will just input genome values correctly
+	startGenomeK = (startGenomeK/10)+1;
+	// These values are randomly selected from +1 or -1	- is there a more appropriate way to determine if initial edges should be +ve or -ve?
+	startGenomeP = c(-1,1,-1,1,1,1,-1,1,1,1,-1,1,-1,1,1,-1,1,-1,-1,-1,-1,1,1,-1,1,1,-1,1,-1,1,1,1,-1,-1,1,1,1,1,-1,-1,-1,-1,1,1,1,-1,1,-1,1,-1);
+	
+	inds.addNewMutation(m101, startGenomeK, 0:K_end);
+	inds.addNewMutation(m102, startGenomeP, P_start:genomesize);
 
 }
 
@@ -86,6 +114,23 @@ mutationEffect(m102, p1) {return 1.0;}
 	inds = sim.subpopulations.individuals;
 	n_inds = length(inds);
 	
+	// Convert any new mutation effects into mutation stack
+	for(i in which(inds.countOfMutationsOfType(m1)>0)){
+		mutPosition = inds[i].haplosomes.mutationsOfType(m1).position;
+		mutEffect = inds[i].haplosomes.mutationsOfType(m1).selectionCoeff;
+		mutBase = inds[i].haplosomes.mutationsOfType(m101)[mutPosition].selectionCoeff;
+		inds[i].haplosomes.addNewMutation(m101, mutBase+mutEffect, mutPosition);
+	}
+	
+	for(i in which(inds.countOfMutationsOfType(m2)>0)){
+		mutPosition = inds[i].haplosomes.mutationsOfType(m2).position;
+		mutBase = inds[i].haplosomes.mutationsOfType(m102)[mutPosition-P_start].selectionCoeff;
+		inds[i].haplosomes.addNewMutation(m102, mutBase*(-1), mutPosition);
+	}
+	
+	inds.haplosomes.removeMutations(inds.haplosomes.mutationsOfType(m1));
+	inds.haplosomes.removeMutations(inds.haplosomes.mutationsOfType(m2));	
+	
 	// Need to supply an a*b matrix where a is # of ind, b is number of parameters (5 -> h,p,K,alpha,beta)
 	h_vals = rep(4, count=n_inds); // Hill coefficient, for now kept as constant across all
 	
@@ -94,22 +139,11 @@ mutationEffect(m102, p1) {return 1.0;}
 	K_vals = matrix(rep(0.0, tmpval), nrow=n_inds, ncol=(nloci*nloci));
 	P_vals = K_vals;
 	
-	// only take m2/m102
-	// can .position and then use as index
-	// BEFORE calculating K_vals
-		// sum(inds[1].haplosomes.mutations[inds[1].haplosomes.mutations.position==5].selectionCoeff)
-		
-		// Alternative to mutation stacking? Look into mutation() Callbacks
-	
 	for(i in 0:(n_inds-1)){
 		// Need to make sure that values are ordered correctly
 		// Geno_strings should be out-degree matrix, then in-degree matrix, byrow=F
-		geno_K = rep(0.0, K_end+1);
-		geno_P = geno_K;
-		for(j in 0:K_end){
-			geno_K[j] = sum(inds[i].haplosomes.mutations[inds[i].haplosomes.mutations.position==j].selectionCoeff);
-			geno_P[j] = product(inds[i].haplosomes.mutations[inds[i].haplosomes.mutations.position==(P_start+j)].selectionCoeff);
-		}
+		geno_K = inds[i].haplosomes.mutationsOfType(m101).selectionCoeff;
+		geno_P = inds[i].haplosomes.mutationsOfType(m102).selectionCoeff;
 		
 		size_term = asInteger((K_end/2)-0.5);
 		
@@ -136,25 +170,29 @@ mutationEffect(m102, p1) {return 1.0;}
 	// Output is a matrix of loci expression values (columns) for each individual (row)
 	out = sim.ODEIntegrate(input);
 	
-	pheno_fit = rep(0.0, n_inds);
-	for(i in 0:(n_inds-1)){
-		// Compare each individual output to the 'optimal' output
-		pheno_vals = asVector(abs((out[i,]-pheno_opt)));
-		pheno_vals = pheno_vals[isNAN(pheno_vals)==F];
-		pheno_vals = exp(pheno_vals/-100);	// Div by 10 just to try and down scale a bit? Div by -ve same as mult by -ve
-		pheno_fit[i] = mean(pheno_vals);
+//	pheno_fit = rep(0.0, n_inds);
+//	for(i in 0:(n_inds-1)){
+//		// Compare each individual output to the 'optimal' output
+//		pheno_vals = asVector(abs((out[i,]-pheno_opt)));
+//		pheno_vals = pheno_vals[isNAN(pheno_vals)==F];
+//		pheno_vals = exp(pheno_vals/-100);	// Div by 10 just to try and down scale a bit? Div by -ve same as mult by -ve
+//		pheno_fit[i] = mean(pheno_vals);
+//		
+//		if(pheno_fit[i]<0){
+//			print("individual ", i, " with pheno_vals: ", pheno_vals);
+//			}
+//	}
+//	inds.fitnessScaling = pheno_fit;
+
+	// Pull output data for relevant traits/loci and feed into Gaussian fitness function
+	traits = out[,which(!isNAN(pheno_opt))];
+	sel_traits = pheno_opt[!isNAN(pheno_opt)];
+	fitnesses = calcFitnessGaussian(traits, sel_traits, opt_sigma, length(sel_traits));
+	inds.fitnessScaling = fitnesses;
 		
-		if(pheno_fit[i]<0){
-			print("individual ", i, " with pheno_vals: ", pheno_vals);
-			}
-	}
-	
-	inds.fitnessScaling = pheno_fit;
-	
 }
 
-
-1000 late() {
+10000 late() {
 	
 	endTime = clock();
 	print(endTime-startTime);
