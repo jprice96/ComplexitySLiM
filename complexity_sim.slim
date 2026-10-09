@@ -22,13 +22,12 @@ function (fi) calcFitnessGaussian(fi traits, fi optTraits, fi optSigma, i$ nTrai
 	return fitnesses;
 }
 
-
 // set up a simple neutral simulation
 initialize() {
 	tmpval = clock();
 	setGlobalParameter("startTime", tmpval);
 	
-	
+	setGlobalParameter("N", 1000); // Population size
 	setGlobalParameter("nloci", 5);
 	tmpval = nloci * (nloci*4); // nloci rows, four paras for each other loci (4n) columns
 	setGlobalParameter("genomesize", tmpval-1); //-1 for indexing
@@ -45,25 +44,17 @@ initialize() {
 	initializeMutationType("m1", 0.5, "n", 0, 0.1);	// M1 = magnitude change mutation; Will create an effect size to add to current value
 	m1.convertToSubstitution = F;
 	m1.mutationStackPolicy = "l";
+	m1.color = "blue";
 	
 	initializeMutationType("m2", 0.5, "f", -1);	// M2 = sign change mutation; Will just invert current value
 	m2.convertToSubstitution = F;
 	m2.mutationStackPolicy = "l";
-	
-	// Storage for final mutation result
-	initializeMutationType("m101", 0.5, "f", 0);
-	m101.convertToSubstitution = F;
-	m101.mutationStackPolicy = "l";
-	m101.color = "blue";
-	
-	initializeMutationType("m102", 0.5, "f", 0);
-	m102.convertToSubstitution = F;
-	m102.mutationStackPolicy = "l";
-	m102.color = "red";
+	m2.color = "red";
+
 	
 	// Create genome
-	initializeGenomicElementType("g1", c(m1, m101), c(1,0));	// Interaction values	
-	initializeGenomicElementType("g2", c(m2, m102), c(1,0));	// Sign values
+	initializeGenomicElementType("g1", c(m1), c(1));	// Interaction values	
+	initializeGenomicElementType("g2", c(m2), c(1));	// Sign values
 	
 	
 	initializeGenomicElement(g1, 0, K_end);
@@ -84,11 +75,28 @@ initialize() {
 // Tell SLiM to ignore the values held as "selection coefficients" as they are used for something else
 mutationEffect(m1, p1) {return 1.0;}
 mutationEffect(m2, p1) {return 1.0;}
-mutationEffect(m101, p1) {return 1.0;}
-mutationEffect(m102, p1) {return 1.0;}
+
+
+// Add up previous effects when we stack - always assuming there is exactly one mutation
+// at each locus! This will break if not
+mutation(m1) {
+	 prev = haplosome.mutations[haplosome.mutations.position == mut.position];
+	 baseEffect = prev.selectionCoeff;
+	 newEffect = mut.mutationType.drawSelectionCoefficient();
+	 mut.setSelectionCoeff(newEffect + baseEffect);
+	 return mut;
+}
+
+mutation(m2) {
+	prev = haplosome.mutations[haplosome.mutations.position == mut.position];
+	baseEffect = prev.selectionCoeff;
+	
+	mut.setSelectionCoeff(-baseEffect);
+	return mut;
+}
 
 1 early() {
-	sim.addSubpop("p1", 1000);
+	sim.addSubpop("p1", N);
 	
 	// Generate initial random genotype by drawing a mutation at each position and giving it to every individual in the population
 	// This generates a "warning" at the end of the output, this is fine it just doesn't expect this kind of thing to be done in early
@@ -102,88 +110,42 @@ mutationEffect(m102, p1) {return 1.0;}
 	// These values are randomly selected from +1 or -1	- is there a more appropriate way to determine if initial edges should be +ve or -ve?
 	startGenomeP = c(-1,1,-1,1,1,1,-1,1,1,1,-1,1,-1,1,1,-1,1,-1,-1,-1,-1,1,1,-1,1,1,-1,1,-1,1,1,1,-1,-1,1,1,1,1,-1,-1,-1,-1,1,1,1,-1,1,-1,1,-1);
 	
-	inds.addNewMutation(m101, startGenomeK, 0:K_end);
-	inds.addNewMutation(m102, startGenomeP, P_start:genomesize);
-
+	inds.addNewMutation(m1, startGenomeK, 0:K_end);
+	inds.addNewMutation(m2, startGenomeP, P_start:genomesize);
 }
+
 
 
 // Determine fitness of present genotypes
 1: late() {
-	
 	inds = sim.subpopulations.individuals;
-	n_inds = length(inds);
-	
-	// Convert any new mutation effects into mutation stack
-	for(i in which(inds.countOfMutationsOfType(m1)>0)){
-		mutPosition = inds[i].haplosomes.mutationsOfType(m1).position;
-		mutEffect = inds[i].haplosomes.mutationsOfType(m1).selectionCoeff;
-		mutBase = inds[i].haplosomes.mutationsOfType(m101)[mutPosition].selectionCoeff;
-		inds[i].haplosomes.addNewMutation(m101, mutBase+mutEffect, mutPosition);
-	}
-	
-	for(i in which(inds.countOfMutationsOfType(m2)>0)){
-		mutPosition = inds[i].haplosomes.mutationsOfType(m2).position;
-		mutBase = inds[i].haplosomes.mutationsOfType(m102)[mutPosition-P_start].selectionCoeff;
-		inds[i].haplosomes.addNewMutation(m102, mutBase*(-1), mutPosition);
-	}
-	
-	inds.haplosomes.removeMutations(inds.haplosomes.mutationsOfType(m1));
-	inds.haplosomes.removeMutations(inds.haplosomes.mutationsOfType(m2));	
 	
 	// Need to supply an a*b matrix where a is # of ind, b is number of parameters (5 -> h,p,K,alpha,beta)
-	h_vals = rep(4, count=n_inds); // Hill coefficient, for now kept as constant across all
+	h_vals = rep(4, count=N); // Hill coefficient, for now kept as constant across all
 	
-	// Create empty dataframes for input
-	tmpval = n_inds*(nloci*nloci);
-	K_vals = matrix(rep(0.0, tmpval), nrow=n_inds, ncol=(nloci*nloci));
-	P_vals = K_vals;
+	// Create empty dataframes for input	
+	size_term = asInteger((K_end/2)-0.5);
 	
-	for(i in 0:(n_inds-1)){
-		// Need to make sure that values are ordered correctly
-		// Geno_strings should be out-degree matrix, then in-degree matrix, byrow=F
-		geno_K = inds[i].haplosomes.mutationsOfType(m101).selectionCoeff;
-		geno_P = inds[i].haplosomes.mutationsOfType(m102).selectionCoeff;
-		
-		size_term = asInteger((K_end/2)-0.5);
-		
-		geno_K_out = matrix(geno_K[0:size_term], nrow=nloci, ncol=nloci, byrow=F);
-		geno_K_in = matrix(geno_K[(size_term+1):K_end], nrow=nloci, ncol=nloci, byrow=F);
-		
-		// geno_P should be the same sizes, so using K_end should work
-		geno_P_out = matrix(geno_P[0:size_term], nrow=nloci, ncol=nloci, byrow=F);
-		geno_P_in = matrix(geno_P[(size_term+1):K_end], nrow=nloci, ncol=nloci, byrow=F);
-		
-		// Calculating values by comparing in-value with corresponding out-value, which should share same coords
-		
-		K_vals[i,] = asVector(exp(((geno_K_out - geno_K_in)*-1)^2));
-		
-		P_vals[i,] = asVector(geno_P_out * geno_P_in);
+	// Assuming there will always be exactly one mutation at every locus so that the array is a fixed size
+	geno_K = t(matrix(inds.haplosomes.mutationsOfType(m1).selectionCoeff, nrow = N, byrow = T));
+	geno_K_out = array(geno_K[0:size_term,], c(nloci, nloci, N));
+	geno_K_in = array(geno_K[(size_term+1):K_end,], c(nloci, nloci, N));
 	
-	}
+	geno_P = t(matrix(inds.haplosomes.mutationsOfType(m2).selectionCoeff, nrow = N, byrow = T));
+	geno_P_out = array(geno_P[0:size_term,], c(nloci, nloci, N));
+	geno_P_in = array(geno_P[(size_term+1):K_end,], c(nloci, nloci, N));
 	
-	alpha = rep(1, count = 5*n_inds);	// Decay term, keep as constant for now
-	beta = rep(1, count = 5*n_inds);		// Maximal expression effect, keep as constant for now
+	K_vals = matrix(exp(-(geno_K_out - geno_K_in)^2), nrow = N, ncol = nloci * nloci, byrow = T);
+	P_vals = matrix(geno_P_out * geno_P_in, nrow = N, ncol = nloci * nloci, byrow = T);
 	
-	input = matrix(c(h_vals, beta, alpha, K_vals, P_vals), nrow=n_inds, byrow=F);
+	alpha = rep(1, count = 5*N);	// Decay term, keep as constant for now
+	beta = rep(1, count = 5*N);		// Maximal expression effect, keep as constant for now
+	
+	input = matrix(c(h_vals, beta, alpha, K_vals, P_vals), nrow=N, byrow=F);
 	
 	// Output is a matrix of loci expression values (columns) for each individual (row)
 	out = sim.ODEIntegrate(input);
 	
-//	pheno_fit = rep(0.0, n_inds);
-//	for(i in 0:(n_inds-1)){
-//		// Compare each individual output to the 'optimal' output
-//		pheno_vals = asVector(abs((out[i,]-pheno_opt)));
-//		pheno_vals = pheno_vals[isNAN(pheno_vals)==F];
-//		pheno_vals = exp(pheno_vals/-100);	// Div by 10 just to try and down scale a bit? Div by -ve same as mult by -ve
-//		pheno_fit[i] = mean(pheno_vals);
-//		
-//		if(pheno_fit[i]<0){
-//			print("individual ", i, " with pheno_vals: ", pheno_vals);
-//			}
-//	}
-//	inds.fitnessScaling = pheno_fit;
-
 	// Pull output data for relevant traits/loci and feed into Gaussian fitness function
 	traits = out[,which(!isNAN(pheno_opt))];
 	sel_traits = pheno_opt[!isNAN(pheno_opt)];
